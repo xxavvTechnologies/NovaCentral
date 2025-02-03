@@ -94,10 +94,15 @@ export class UIManager {
     }
 
     async handleFileDrop(files) {
-        for (const file of files) {
-            await this.fileSystem.uploadFile(file);
+        try {
+            for (const file of files) {
+                await this.fileSystem.uploadFile(file);
+            }
+            this.render();
+        } catch (error) {
+            console.error('Error handling file drop:', error);
+            alert('Error uploading file. Please try again.');
         }
-        this.render();
     }
 
     async createNewFolder() {
@@ -123,11 +128,20 @@ export class UIManager {
         const info = document.querySelector('.storage-info');
         const used = this.storage.getUsedSpace();
         const total = this.storage.getTotalSpace();
+        const percentage = (used/total) * 100;
         info.innerHTML = `
+            <h2 class="storage-title">
+                <i class="fas fa-hard-drive"></i>
+                <span>Storage Space</span>
+            </h2>
             <div class="storage-bar">
-                <div class="used" style="width: ${(used/total)*100}%"></div>
+                <div class="used" style="width: ${percentage}%"></div>
             </div>
-            <div class="storage-text">${this.formatSize(used)} of ${this.formatSize(total)} used</div>
+            <div class="storage-text">
+                <i class="fas fa-chart-pie"></i>
+                <strong>${this.formatSize(used)}</strong> used of <strong>${this.formatSize(total)}</strong>
+                <div class="storage-percentage">${percentage.toFixed(1)}% used</div>
+            </div>
         `;
     }
 
@@ -143,24 +157,102 @@ export class UIManager {
     }
 
     async openFile(path) {
+        // Always show preview first
+        this.previewFile(path);
+    }
+
+    previewFile(path) {
         const file = this.fileSystem.getFile(path);
-        if (file && file.storageKey) {
-            const data = this.storage.getItem(file.storageKey);
-            if (file.mimeType.startsWith('image/') || 
-                file.mimeType.startsWith('video/') || 
-                file.mimeType.startsWith('audio/')) {
-                this.previewFile(path);
+        if (!file) return;
+
+        const data = localStorage.getItem(file.storageKey);
+        if (!data) return;
+
+        const preview = document.createElement('dialog');
+        preview.className = 'file-preview fullscreen';
+        
+        let content = '';
+        try {
+            if (file.mimeType.startsWith('image/')) {
+                content = `<img src="${data}" alt="${file.name}">`;
+            } else if (file.mimeType.startsWith('video/')) {
+                content = `<video controls src="${data}"></video>`;
+            } else if (file.mimeType.startsWith('audio/')) {
+                content = `<audio controls src="${data}"></audio>`;
+            } else if (file.mimeType === 'application/pdf') {
+                content = `<iframe src="${data}" width="100%" height="100%"></iframe>`;
             } else {
-                const a = document.createElement('a');
-                a.href = `data:${file.mimeType};charset=utf-8,${encodeURIComponent(data)}`;
-                a.download = file.name;
-                a.click();
+                const textContent = data.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                content = `<div class="preview-text"><pre>${textContent}</pre></div>`;
             }
+        } catch (error) {
+            content = '<div class="preview-error">Error previewing file</div>';
         }
+
+        preview.innerHTML = `
+            <div class="preview-toolbar">
+                <div class="preview-title">
+                    <h3>${file.name}</h3>
+                    <span class="preview-meta">${this.formatSize(file.size)} · ${file.mimeType}</span>
+                </div>
+                <div class="preview-actions">
+                    <button class="action-btn" onclick="this.closest('dialog').querySelector('a.download-link').click()">
+                        <i class="fas fa-download"></i>
+                    </button>
+                    <button class="action-btn" onclick="this.closest('dialog').close()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="preview-content">${content}</div>
+            <a class="download-link hidden" href="${data}" download="${file.name}"></a>
+        `;
+
+        document.body.appendChild(preview);
+        preview.showModal();
+
+        preview.addEventListener('close', () => {
+            preview.remove();
+        });
     }
 
     getFilesGridHTML(contents) {
-        return this.fileSystem.getFilesGridHTML(contents);
+        if (!contents?.length) {
+            return `
+                <div class="empty-state">
+                    <i class="fas fa-folder-open empty-icon"></i>
+                    <h3>No files here yet</h3>
+                    <p>Drop files here or use the upload button</p>
+                </div>
+            `;
+        }
+
+        return contents.map(item => `
+            <div class="file-item" data-path="${item.path}">
+                <div class="file-type-indicator">${this.getFileType(item)}</div>
+                <i class="fas ${item.type === 'folder' ? 'fa-folder' : this.fileSystem.getFileIcon(item.mimeType)}"></i>
+                <div class="file-name" title="${item.name}">${this.truncateFileName(item.name)}</div>
+                ${item.type === 'file' ? `
+                    <div class="file-info">
+                        <span class="file-size">${this.formatSize(item.size)}</span>
+                        ${item.importedFrom ? `<span class="file-source">From ${item.importedFrom}</span>` : ''}
+                    </div>
+                ` : ''}
+            </div>
+        `).join('');
+    }
+
+    truncateFileName(name) {
+        if (name.length <= 20) return name;
+        const ext = name.split('.').pop();
+        const base = name.slice(0, -ext.length - 1);
+        return base.slice(0, 16) + '...' + '.' + ext;
+    }
+
+    getFileType(item) {
+        if (item.type === 'folder') return 'Folder';
+        const ext = item.name.split('.').pop().toLowerCase();
+        return ext.toUpperCase();
     }
 
     initializeContextMenu() {
@@ -168,29 +260,29 @@ export class UIManager {
         menu.className = 'context-menu';
         menu.innerHTML = `
             <div class="menu-item" data-action="preview">
-                <span>👁️</span>
+                <i class="fas fa-eye"></i>
                 <span>Preview</span>
             </div>
             <div class="menu-item" data-action="share">
-                <span>🔗</span>
+                <i class="fas fa-share-nodes"></i>
                 <span>Share</span>
             </div>
             <div class="menu-item" data-action="download">
-                <span>⬇️</span>
+                <i class="fas fa-download"></i>
                 <span>Download</span>
             </div>
             <div class="menu-separator"></div>
             <div class="menu-item" data-action="rename">
-                <span>✏️</span>
+                <i class="fas fa-pen"></i>
                 <span>Rename</span>
             </div>
             <div class="menu-item" data-action="move">
-                <span>📦</span>
+                <i class="fas fa-arrows-up-down-left-right"></i>
                 <span>Move to</span>
             </div>
             <div class="menu-separator"></div>
             <div class="menu-item danger" data-action="delete">
-                <span>🗑️</span>
+                <i class="fas fa-trash"></i>
                 <span>Delete</span>
             </div>
         `;
@@ -288,51 +380,28 @@ export class UIManager {
 
     downloadFile(path) {
         const file = this.fileSystem.getFile(path);
-        if (file && file.storageKey) {
-            const data = this.storage.getItem(file.storageKey);
-            const a = document.createElement('a');
+        if (!file || !file.storageKey) return;
+
+        const data = localStorage.getItem(file.storageKey);
+        if (!data) {
+            console.error('File data not found:', file);
+            return;
+        }
+
+        const a = document.createElement('a');
+        if (data.startsWith('data:')) {
             a.href = data;
-            a.download = file.name;
-            a.click();
-        }
-    }
-
-    previewFile(path) {
-        const file = this.fileSystem.getFile(path);
-        if (!file) return;
-
-        const data = this.storage.getItem(file.storageKey);
-        const preview = document.createElement('dialog');
-        preview.className = 'file-preview';
-        
-        let content = '';
-        if (file.mimeType.startsWith('image/')) {
-            content = `<img src="${data}" alt="${file.name}">`;
-        } else if (file.mimeType.startsWith('video/')) {
-            content = `<video controls src="${data}"></video>`;
-        } else if (file.mimeType.startsWith('audio/')) {
-            content = `<audio controls src="${data}"></audio>`;
-        } else if (typeof data === 'string') {
-            content = `<div class="preview-text">${data.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`;
         } else {
-            content = `<div class="preview-text">Preview not available</div>`;
+            // Handle text files
+            const blob = new Blob([data], { type: file.mimeType });
+            a.href = URL.createObjectURL(blob);
         }
-
-        preview.innerHTML = `
-            <div class="preview-header">
-                <h3>${file.name}</h3>
-                <button onclick="this.closest('dialog').close()">×</button>
-            </div>
-            <div class="preview-content">${content}</div>
-        `;
-
-        document.body.appendChild(preview);
-        preview.showModal();
-
-        // Clean up when dialog is closed
-        preview.addEventListener('close', () => {
-            preview.remove();
-        });
+        a.download = file.name;
+        a.click();
+        
+        if (!data.startsWith('data:')) {
+            URL.revokeObjectURL(a.href);
+        }
     }
 
     async handleSearch(query) {
@@ -362,34 +431,50 @@ export class UIManager {
         dialog.showModal();
     }
 
-    previewFile(path) {
-        const file = this.fileSystem.getFile(path);
-        if (!file) return;
-
-        const data = this.storage.getItem(file.storageKey);
-        const preview = document.createElement('dialog');
-        preview.className = 'file-preview';
-        
-        let content = '';
-        if (file.mimeType.startsWith('image/')) {
-            content = `<img src="${data}" alt="${file.name}">`;
-        } else if (file.mimeType.startsWith('video/')) {
-            content = `<video controls src="${data}"></video>`;
-        } else if (file.mimeType.startsWith('audio/')) {
-            content = `<audio controls src="${data}"></audio>`;
-        } else {
-            content = `<div class="preview-text">${data}</div>`;
-        }
-
-        preview.innerHTML = `
-            <div class="preview-header">
-                <h3>${file.name}</h3>
-                <button onclick="this.closest('dialog').close()">×</button>
+    initializeSearchBar() {
+        const searchContainer = document.querySelector('.search-container');
+        searchContainer.innerHTML = `
+            <div class="search-wrapper">
+                <i class="fas fa-search"></i>
+                <input type="text" id="search-input" class="search-input" placeholder="Search files and folders...">
             </div>
-            <div class="preview-content">${content}</div>
         `;
+    }
 
-        document.body.appendChild(preview);
-        preview.showModal();
+    createSortDropdown() {
+        const sortDropdown = document.createElement('div');
+        sortDropdown.className = 'sort-dropdown';
+        sortDropdown.innerHTML = `
+            <button class="sort-button">
+                <i class="fas fa-sort"></i>
+                <span>Sort</span>
+            </button>
+            <div class="sort-menu">
+                <div class="menu-item" data-sort="name">
+                    <i class="fas fa-font"></i>
+                    <span>Name</span>
+                </div>
+                <div class="menu-item" data-sort="size">
+                    <i class="fas fa-weight"></i>
+                    <span>Size</span>
+                </div>
+                <div class="menu-item" data-sort="date">
+                    <i class="fas fa-calendar"></i>
+                    <span>Date</span>
+                </div>
+            </div>
+        `;
+        document.querySelector('.toolbar').appendChild(sortDropdown);
+
+        // Add sort functionality
+        sortDropdown.addEventListener('click', (e) => {
+            const sortBy = e.target.closest('.menu-item')?.dataset.sort;
+            if (sortBy) this.sortFiles(sortBy);
+        });
+    }
+
+    sortFiles(by) {
+        this.fileSystem.sortBy = by;
+        this.render();
     }
 }

@@ -2,6 +2,7 @@ export class FileSystem {
     constructor() {
         this.currentPath = '/';
         this.storage = window.localStorage;
+        this.sortBy = 'name';
     }
 
     async init() {
@@ -29,21 +30,60 @@ export class FileSystem {
     }
 
     async uploadFile(file) {
-        const fileData = await this.readFile(file);
-        const filesystem = JSON.parse(this.storage.getItem('filesystem'));
-        
-        const fileNode = {
-            type: 'file',
-            name: file.name,
-            size: file.size,
-            mimeType: file.type,
-            path: `${this.currentPath}${file.name}`,
-            storageKey: `file_${Date.now()}_${file.name}`
-        };
+        try {
+            const fileData = await this.readFile(file);
+            const filesystem = JSON.parse(this.storage.getItem('filesystem'));
+            
+            const fileNode = {
+                type: 'file',
+                name: file.name,
+                size: file.size,
+                mimeType: file.type || this.getMimeTypeFromName(file.name),
+                path: `${this.currentPath}${file.name}`,
+                storageKey: `file_${Date.now()}_${file.name}`,
+                lastModified: file.lastModified
+            };
 
-        this.storage.setItem(fileNode.storageKey, fileData);
-        this.addToPath(filesystem, this.currentPath, fileNode);
+            // Store the actual file data
+            localStorage.setItem(fileNode.storageKey, fileData);
+            
+            // Add file to filesystem
+            this.addToPath(filesystem, this.currentPath, fileNode);
+            this.storage.setItem('filesystem', JSON.stringify(filesystem));
+            
+            return fileNode;
+        } catch (error) {
+            console.error('Error uploading file:', error);
+            throw error;
+        }
+    }
+
+    async addImportedFile(fileData) {
+        const filesystem = JSON.parse(this.storage.getItem('filesystem'));
+        const importFolder = await this.ensureImportFolder(filesystem);
+        
+        fileData.importedFrom = new URL(fileData.path).hostname;
+        importFolder.children.push(fileData);
+        
         this.storage.setItem('filesystem', JSON.stringify(filesystem));
+    }
+
+    async ensureImportFolder(filesystem) {
+        let importFolder = filesystem.children.find(
+            child => child.type === 'folder' && child.name === 'Imported'
+        );
+
+        if (!importFolder) {
+            importFolder = {
+                type: 'folder',
+                name: 'Imported',
+                path: '/Imported/',
+                children: []
+            };
+            filesystem.children.push(importFolder);
+        }
+
+        return importFolder;
     }
 
     readFile(file) {
@@ -52,12 +92,30 @@ export class FileSystem {
             reader.onload = (e) => resolve(e.target.result);
             reader.onerror = (e) => reject(e);
             
-            if (file.type.startsWith('image/') || file.type.startsWith('video/') || file.type.startsWith('audio/')) {
+            if (file.type.startsWith('image/') || 
+                file.type.startsWith('video/') || 
+                file.type.startsWith('audio/') ||
+                file.type.includes('pdf')) {
                 reader.readAsDataURL(file);
             } else {
                 reader.readAsText(file);
             }
         });
+    }
+
+    getMimeTypeFromName(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        const mimeTypes = {
+            txt: 'text/plain',
+            pdf: 'application/pdf',
+            jpg: 'image/jpeg',
+            jpeg: 'image/jpeg',
+            png: 'image/png',
+            gif: 'image/gif',
+            mp4: 'video/mp4',
+            mp3: 'audio/mpeg'
+        };
+        return mimeTypes[ext] || 'application/octet-stream';
     }
 
     getFile(path) {
@@ -96,7 +154,28 @@ export class FileSystem {
             current = current.children.find(c => c.name === part);
         }
         
-        return current.children;
+        const contents = [...current.children];
+        return this.sortContents(contents);
+    }
+
+    sortContents(contents) {
+        // Always put folders first
+        contents.sort((a, b) => {
+            if (a.type !== b.type) {
+                return a.type === 'folder' ? -1 : 1;
+            }
+
+            switch(this.sortBy) {
+                case 'size':
+                    return (b.size || 0) - (a.size || 0);
+                case 'date':
+                    return (b.lastModified || 0) - (a.lastModified || 0);
+                case 'name':
+                default:
+                    return a.name.localeCompare(b.name);
+            }
+        });
+        return contents;
     }
 
     getFolderTreeHTML() {
@@ -110,8 +189,8 @@ export class FileSystem {
         const padding = level * 20;
         let html = `
             <div class="folder-item" style="padding-left: ${padding}px" data-path="${node.path}">
-                <i class="folder-icon">📁</i>
-                <span>${node.name}</span>
+                <i class="fas fa-folder"></i>
+                <span class="folder-name">${node.name}</span>
             </div>
         `;
         
@@ -130,7 +209,7 @@ export class FileSystem {
         
         return contents.map(item => `
             <div class="file-item" data-path="${item.path}">
-                <i class="file-icon">${item.type === 'folder' ? '📁' : this.getFileIcon(item.mimeType)}</i>
+                <i class="fas ${item.type === 'folder' ? 'fa-folder' : this.getFileIcon(item.mimeType)}"></i>
                 <div class="file-name">${item.name}</div>
                 ${item.type === 'file' ? `<div class="file-size">${this.formatSize(item.size)}</div>` : ''}
             </div>
@@ -138,12 +217,17 @@ export class FileSystem {
     }
 
     getFileIcon(mimeType) {
-        if (!mimeType) return '📄';
-        if (mimeType.startsWith('image/')) return '🖼️';
-        if (mimeType.startsWith('video/')) return '🎬';
-        if (mimeType.startsWith('audio/')) return '🎵';
-        if (mimeType.includes('pdf')) return '📕';
-        return '📄';
+        if (!mimeType) return 'fa-file';
+        if (mimeType.startsWith('image/')) return 'fa-image';
+        if (mimeType.startsWith('video/')) return 'fa-video';
+        if (mimeType.startsWith('audio/')) return 'fa-music';
+        if (mimeType.includes('pdf')) return 'fa-file-pdf';
+        if (mimeType.includes('word')) return 'fa-file-word';
+        if (mimeType.includes('excel') || mimeType.includes('sheet')) return 'fa-file-excel';
+        if (mimeType.includes('powerpoint') || mimeType.includes('presentation')) return 'fa-file-powerpoint';
+        if (mimeType.includes('text')) return 'fa-file-lines';
+        if (mimeType.includes('zip') || mimeType.includes('compressed')) return 'fa-file-zipper';
+        return 'fa-file';
     }
 
     formatSize(bytes) {
