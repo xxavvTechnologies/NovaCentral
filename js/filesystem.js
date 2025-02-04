@@ -3,16 +3,66 @@ export class FileSystem {
         this.currentPath = '/';
         this.storage = window.localStorage;
         this.sortBy = 'name';
+        this.trash = [];
+        this.favorites = new Set();
+        this.recentFiles = [];
+        this.fileVersions = new Map();
+        this.viewMode = 'grid'; // or 'list'
     }
 
     async init() {
-        if (!this.storage.getItem('filesystem')) {
-            this.storage.setItem('filesystem', JSON.stringify({
-                type: 'folder',
-                name: 'root',
-                path: '/',
-                children: []
-            }));
+        try {
+            if (!this.storage.getItem('filesystem')) {
+                await this.initializeEmptyFileSystem();
+            }
+            await this.loadSavedStates();
+        } catch (error) {
+            console.error('Error initializing filesystem:', error);
+            // Create minimal state if loading fails
+            await this.initializeEmptyFileSystem();
+        }
+    }
+
+    async initializeEmptyFileSystem() {
+        const emptyFs = {
+            type: 'folder',
+            name: 'root',
+            path: '/',
+            children: []
+        };
+        
+        // Use batch operation to avoid quota issues
+        const batch = {
+            filesystem: JSON.stringify(emptyFs),
+            trash: '[]',
+            favorites: '[]',
+            recentFiles: '[]',
+            fileVersions: '[]'
+        };
+
+        // Store all initial data at once
+        Object.entries(batch).forEach(([key, value]) => {
+            try {
+                this.storage.setItem(key, value);
+            } catch (e) {
+                console.warn(`Failed to initialize ${key}:`, e);
+            }
+        });
+    }
+
+    async loadSavedStates() {
+        try {
+            this.trash = JSON.parse(this.storage.getItem('trash')) || [];
+            this.favorites = new Set(JSON.parse(this.storage.getItem('favorites')) || []);
+            this.recentFiles = JSON.parse(this.storage.getItem('recentFiles')) || [];
+            this.fileVersions = new Map(JSON.parse(this.storage.getItem('fileVersions')) || []);
+        } catch (error) {
+            console.error('Error loading saved states:', error);
+            // Reset to defaults if loading fails
+            this.trash = [];
+            this.favorites = new Set();
+            this.recentFiles = [];
+            this.fileVersions = new Map();
         }
     }
 
@@ -31,17 +81,30 @@ export class FileSystem {
 
     async uploadFile(file) {
         try {
-            const fileData = await this.readFile(file);
+            const compressedFile = await this.compressFile(file);
+            const fileData = await this.readFile(compressedFile);
+            
+            // Check available space before storing
+            const requiredSpace = fileData.length * 2; // UTF-16 encoding
+            const availableSpace = this.getAvailableSpace();
+            
+            if (requiredSpace > availableSpace) {
+                throw new Error('Insufficient storage space');
+            }
+
+            // Clean up old files if needed
+            await this.cleanupOldFiles(requiredSpace);
+
             const filesystem = JSON.parse(this.storage.getItem('filesystem'));
             
             const fileNode = {
                 type: 'file',
-                name: file.name,
-                size: file.size,
-                mimeType: file.type || this.getMimeTypeFromName(file.name),
-                path: `${this.currentPath}${file.name}`,
-                storageKey: `file_${Date.now()}_${file.name}`,
-                lastModified: file.lastModified
+                name: compressedFile.name,
+                size: compressedFile.size,
+                mimeType: compressedFile.type || this.getMimeTypeFromName(compressedFile.name),
+                path: `${this.currentPath}${compressedFile.name}`,
+                storageKey: `file_${Date.now()}_${compressedFile.name}`,
+                lastModified: compressedFile.lastModified
             };
 
             // Store the actual file data
@@ -51,11 +114,124 @@ export class FileSystem {
             this.addToPath(filesystem, this.currentPath, fileNode);
             this.storage.setItem('filesystem', JSON.stringify(filesystem));
             
+            this.addToRecent(fileNode);
+            
             return fileNode;
         } catch (error) {
             console.error('Error uploading file:', error);
             throw error;
         }
+    }
+
+    getAvailableSpace() {
+        const totalSpace = this.getTotalSpace();
+        const usedSpace = this.getUsedSpace();
+        return totalSpace - usedSpace;
+    }
+
+    async cleanupOldFiles(requiredSpace) {
+        if (this.getAvailableSpace() >= requiredSpace) return;
+
+        // Remove old files from trash first
+        for (const file of this.trash) {
+            if (file.storageKey) {
+                this.storage.removeItem(file.storageKey);
+            }
+        }
+        this.trash = [];
+        this.storage.setItem('trash', '[]');
+
+        // If still needed, remove old versions
+        if (this.getAvailableSpace() < requiredSpace) {
+            this.fileVersions.clear();
+            this.storage.setItem('fileVersions', '[]');
+        }
+    }
+
+    async compressFile(file) {
+        if (file.type.startsWith('image/')) {
+            return this.compressImage(file);
+        } else if (file.type.startsWith('video/')) {
+            return this.compressVideo(file);
+        }
+        return file;
+    }
+
+    async compressImage(file) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.src = URL.createObjectURL(file);
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                // Calculate new dimensions (max 1920px width/height)
+                let width = img.width;
+                let height = img.height;
+                const maxSize = 1920;
+                
+                if (width > maxSize || height > maxSize) {
+                    if (width > height) {
+                        height = Math.round((height * maxSize) / width);
+                        width = maxSize;
+                    } else {
+                        width = Math.round((width * maxSize) / height);
+                        height = maxSize;
+                    }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                ctx.drawImage(img, 0, 0, width, height);
+
+                canvas.toBlob((blob) => {
+                    resolve(new File([blob], file.name, {
+                        type: 'image/jpeg',
+                        lastModified: file.lastModified
+                    }));
+                }, 'image/jpeg', 0.85); // 85% quality
+                
+                URL.revokeObjectURL(img.src);
+            };
+        });
+    }
+
+    async compressVideo(file) {
+        // Basic video compression using HTML5 video element
+        return new Promise((resolve) => {
+            const video = document.createElement('video');
+            video.src = URL.createObjectURL(file);
+            video.onloadedmetadata = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                // Reduce resolution if needed
+                let width = video.videoWidth;
+                let height = video.videoHeight;
+                const maxSize = 1280;
+                
+                if (width > maxSize || height > maxSize) {
+                    if (width > height) {
+                        height = Math.round((height * maxSize) / width);
+                        width = maxSize;
+                    } else {
+                        width = Math.round((width * maxSize) / height);
+                        height = maxSize;
+                    }
+                }
+
+                canvas.width = width;
+                canvas.height = height;
+                
+                // Capture first frame for thumbnail
+                ctx.drawImage(video, 0, 0, width, height);
+                
+                URL.revokeObjectURL(video.src);
+                resolve(file); // For now, just return original file
+                // TODO: Implement proper video compression using WebCodecs API
+                // when it becomes more widely supported
+            };
+        });
     }
 
     async addImportedFile(fileData) {
@@ -331,5 +507,118 @@ export class FileSystem {
                 this.updateChildPaths(child, child.path);
             }
         }
+    }
+
+    addToRecent(file) {
+        this.recentFiles = [file, ...this.recentFiles.filter(f => f.path !== file.path)].slice(0, 20);
+        localStorage.setItem('recentFiles', JSON.stringify(this.recentFiles));
+    }
+
+    toggleFavorite(path) {
+        if (this.favorites.has(path)) {
+            this.favorites.delete(path);
+        } else {
+            this.favorites.add(path);
+        }
+        localStorage.setItem('favorites', JSON.stringify([...this.favorites]));
+    }
+
+    async moveToTrash(path) {
+        const file = this.getFile(path);
+        if (file) {
+            this.trash.push({ ...file, deletedAt: Date.now() });
+            await this.deleteItem(path);
+            localStorage.setItem('trash', JSON.stringify(this.trash));
+        }
+    }
+
+    async restoreFromTrash(path) {
+        const fileIndex = this.trash.findIndex(f => f.path === path);
+        if (fileIndex !== -1) {
+            const file = this.trash[fileIndex];
+            this.trash.splice(fileIndex, 1);
+            // Restore file to filesystem
+            await this.restoreFile(file);
+            localStorage.setItem('trash', JSON.stringify(this.trash));
+        }
+    }
+
+    addFileVersion(path, content) {
+        const versions = this.fileVersions.get(path) || [];
+        versions.push({
+            content,
+            timestamp: Date.now(),
+            size: content.length
+        });
+        this.fileVersions.set(path, versions.slice(-10)); // Keep last 10 versions
+        localStorage.setItem('fileVersions', JSON.stringify([...this.fileVersions]));
+    }
+
+    searchFiles(query) {
+        const searchResults = [];
+        const queryLower = query.toLowerCase();
+        
+        const searchNode = (node) => {
+            // Search in file/folder name
+            if (node.name.toLowerCase().includes(queryLower)) {
+                searchResults.push(node);
+                return;
+            }
+            
+            // For files, also search in content if it's a text file
+            if (node.type === 'file' && this.isTextFile(node.mimeType)) {
+                const content = localStorage.getItem(node.storageKey);
+                if (content && content.toLowerCase().includes(queryLower)) {
+                    searchResults.push(node);
+                    return;
+                }
+            }
+            
+            // Recursively search in children
+            if (node.children) {
+                node.children.forEach(searchNode);
+            }
+        };
+        
+        const filesystem = JSON.parse(localStorage.getItem('filesystem'));
+        searchNode(filesystem);
+        
+        return searchResults;
+    }
+
+    isTextFile(mimeType) {
+        return mimeType?.startsWith('text/') || 
+               mimeType?.includes('javascript') ||
+               mimeType?.includes('json');
+    }
+
+    getFavorites() {
+        return Array.from(this.favorites)
+            .map(path => this.getFile(path))
+            .filter(Boolean);
+    }
+
+    getRecentFiles() {
+        return this.recentFiles
+            .map(file => this.getFile(file.path))
+            .filter(Boolean);
+    }
+
+    getTrash() {
+        // Filter out items older than 30 days
+        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+        this.trash = this.trash.filter(item => item.deletedAt > thirtyDaysAgo);
+        localStorage.setItem('trash', JSON.stringify(this.trash));
+        return this.trash;
+    }
+
+    emptyTrash() {
+        this.trash.forEach(file => {
+            if (file.storageKey) {
+                localStorage.removeItem(file.storageKey);
+            }
+        });
+        this.trash = [];
+        localStorage.setItem('trash', JSON.stringify(this.trash));
     }
 }

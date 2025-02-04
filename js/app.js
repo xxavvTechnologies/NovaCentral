@@ -7,13 +7,30 @@ class NovaCentral {
         this.storage = new StorageManager();
         this.fileSystem = new FileSystem();
         this.ui = new UIManager(this.storage, this.fileSystem);
+        this.initialized = false;
     }
 
     async init() {
-        await this.storage.init();
-        await this.fileSystem.init();
-        this.ui.render();
-        this.hideLoading();
+        try {
+            if (this.initialized) return;
+            
+            await this.storage.init();
+            await this.fileSystem.init();
+            this.ui.render();
+            this.hideLoading();
+            
+            this.initialized = true;
+        } catch (error) {
+            console.error('Failed to initialize app:', error);
+            this.showError('Failed to initialize application. Please refresh the page.');
+        }
+    }
+
+    showError(message) {
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'error-message';
+        errorDiv.textContent = message;
+        document.body.appendChild(errorDiv);
     }
 
     hideLoading() {
