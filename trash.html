@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nova Central - Your Cloud Files</title>
+    <title>Nova Central - Trash</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
@@ -25,7 +25,7 @@
                 <span class="btn-text">Create New</span>
             </button>
             <ul class="nav-links">
-                <li class="active">
+                <li>
                     <a href="index.html">
                         <i class="ri-file-text-line"></i>
                         <span class="nav-text">Documents</span>
@@ -43,7 +43,7 @@
                         <span class="nav-text">Favorites</span>
                     </a>
                 </li>
-                <li>
+                <li class="active">
                     <a href="trash.html">
                         <i class="ri-delete-bin-line"></i>
                         <span class="nav-text">Trash</span>
@@ -75,40 +75,32 @@
     <main class="main-content">
         <div class="content-header">
             <div class="breadcrumb">
-                <h2>My Documents</h2>
-            </div>
-            <div class="filters">
-                <select id="appFilter">
-                    <option value="all">All Apps</option>
-                </select>
+                <h2>Trash</h2>
+                <p class="subtitle">Items are permanently deleted after 30 days</p>
             </div>
         </div>
         
         <div class="file-browser">
             <div id="fileList" class="file-list">
-                <!-- Files will be displayed here -->
+                <!-- Deleted files will be displayed here -->
             </div>
         </div>
     </main>
-    
-    <div id="sidebar" class="sidebar">
-        <div class="sidebar-header">
-            <h2 id="sidebarTitle">Document Details</h2>
-            <button id="closeSidebar">&times;</button>
-        </div>
-        <div class="sidebar-content">
-            <div id="documentDetails"></div>
-            <div class="revisions-section">
-                <h3>Edit History</h3>
-                <div id="revisionsList"></div>
-            </div>
-        </div>
+
+    <div id="contextMenu" class="context-menu">
+        <button class="context-item restore-btn">
+            <i class="ri-refresh-line"></i>
+            Restore
+        </button>
+        <button class="context-item delete-btn">
+            <i class="ri-delete-bin-7-line"></i>
+            Delete Permanently
+        </button>
     </div>
-    <div id="overlay" class="overlay"></div>
 
     <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
-    <script src="app.js"></script>
+    <script src="trash.js"></script>
 </body>
 </html>
